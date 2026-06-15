@@ -1,0 +1,2642 @@
+﻿//---------------------------------------------------------------------------
+
+#include <vcl.h>
+#pragma hdrstop
+
+#include "Unit1.h"
+#include "Unit2.h"
+#include <map>
+//---------------------------------------------------------------------------
+#pragma package(smart_init)
+#pragma resource "*.dfm"
+#include <WinInet.h>  // 記得加這個
+
+#pragma comment(lib, "wininet.lib") // 連結 WinINet 函式庫（對 BCB，有時需要手動加）
+
+TForm1 *Form1;
+
+String strHost;
+int clientnum = 0;//client目前連線數量
+int CLIENT_NUM=4;
+String suits[] = {"h", "d", "c", "s"};//撲克牌花色((h:黑桃,d:紅心,c:方塊,s:梅花))
+String ranks[] = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"};//撲克牌數字
+TStringList *dealtCards = new TStringList();//紀錄已發的牌
+String playerNum;//玩家編號
+bool isConnected[4] = {false, false, false, false};//玩家是否在線
+bool hasDealtCards[4] = {false, false, false, false}; // 追蹤每個玩家是否已發牌
+bool blnServer;//SERVER
+int money = 0;//下注金額
+int totalmoney = 0;//累積金額
+int remainingmoney = 200;//剩餘金額
+int Bettingtime = 6;//下注時間
+bool hasbet[4]; // 紀錄每個玩家是否已下注
+bool startok = false;//如果已經開始玩家就不能加入
+int bettime = 0;//下注時間
+bool quicksmoke=false;//10秒沒到提前抽牌
+int valuenew,value1,value2;//判斷是否射龍門
+int successnonum = 0;//沒射龍門的數量
+//String againcard;//抽牌
+TCustomWinSocket* playerSockets[4] = {nullptr, nullptr, nullptr, nullptr};//儲存玩家的位置
+std::map<int, int> playerMoney; // key: playerNum, value: remainingmoney(用來記錄玩家餘額)
+std::map<int, bool> wifiClient;//記錄哪些玩家有回傳 PING
+bool wifiServer = false;//客戶端是否有收到伺服器的 PING
+bool ServerOK = false;//用來追蹤是否收到 "OK"
+std::map<int, bool> ClientOK ;//用來追蹤是否收到 "OK"
+int serverTime6 = 0;
+int serverTime7 = 0;
+int serverTime8 = 0;
+int serverTime9 = 0;
+int serverTime10 = 0;
+int clientTime1 = 0;
+int clientTime2 = 0;
+int twoTime = 0;
+//int serverTime[5] = {0}; // 假設有4個玩家，索引0保留
+bool playerAction[4] = {false, false, false, false}; //判斷是否抽牌或棄牌
+int newTime = 0;//當玩家按了抽牌或棄牌會有新的時間
+bool isManualDisconnect = false;//判斷CLIENT是否為自己斷線
+//int serverTimes[4] = {0}; // 每個玩家的獨立計時器
+String serverbuffer;
+String clientbuffer;
+
+
+//---------------------------------------------------------------------------
+__fastcall TForm1::TForm1(TComponent* Owner)
+	: TForm(Owner)
+{
+//所有玩家都沒設龍門，不會顯示遊戲結束
+	srand(time(0)); // 設定亂數種子
+	//std::vector<Card> deck;
+
+	Image1->Stretch = true;
+	Image2->Stretch = true;
+	Image3->Stretch = true;
+	Image4->Stretch = true;
+	Image5->Stretch = true;
+	Image6->Stretch = true;
+	Image7->Stretch = true;
+	Image8->Stretch = true;
+	Image9->Stretch = true;
+	Image10->Stretch = true;
+	Image11->Stretch = true;
+	Image12->Stretch = true;
+
+	Timer1->Enabled = false;//關閉計時器
+	Timer3->Enabled = false;//關閉計時器
+	Timer5->Enabled = false;//關閉計時器
+	Timer6->Enabled = false;//關閉計時器
+	Timer7->Enabled = false;//關閉計時器
+	Timer8->Enabled = false;//關閉計時器
+	Timer9->Enabled = false;//關閉計時器
+	Timer10->Enabled = false;//關閉計時器
+	//Panel1->Parent = Form1;
+	/*GroupBox2->Visible=false;
+	GroupBox2->Enabled=false;*/
+
+	for (int i = 0; i < 4; i++)
+	{
+		hasbet[i] = false;//預設所有玩家尚未下注
+	}
+	for (int i = 1; i <= 4; i++)
+	{
+		ClientOK[i] = false;
+	}
+	for (int i = 1; i <=4; i++)
+	{
+		wifiClient[i] = false;
+	}
+
+	Timer5->Interval = 3000;
+	Timer6->Interval = 1000;
+	Timer7->Interval = 1000;
+	Timer8->Interval = 1000;
+	Timer9->Interval = 1000;
+	Timer10->Interval = 1000;
+
+}
+
+//---------------------------------------------------------------------------
+
+String DealCard()
+{
+	String card;
+	do
+	{
+		card = suits[rand() % 4] + ranks[rand() % 13];//隨機選擇花色和數字
+	}
+	while (dealtCards->IndexOf(card) != -1); // 確保牌未重複
+	dealtCards->Add(card); // 紀錄已發牌
+	return card;
+}
+
+/*void TForm1::sendCardsToClient(TCustomWinSocket *Socket)
+{
+	String card1 = DealCard();
+	String card2 = DealCard();
+	Socket->SendText("Cards: " + card1 + ", " + card2); // 傳送兩張牌給客戶端
+	Memo1->Lines->Add(Socket->RemoteAddress + " 發牌：" + card1 + ", " + card2); // 紀錄在伺服器
+}*/
+
+bool TForm1::isPortAvailable(int port)
+{
+	SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) return false;//檢查是否成功創建 socket，如果創建失敗，返回 false
+    sockaddr_in server;
+    server.sin_family = AF_INET;//使用 IPv4 協議
+    server.sin_addr.s_addr = INADDR_ANY;//綁定到所有本地 IP 地址
+	server.sin_port = htons(port);//將傳入的端口號轉換為網絡字節序
+    // 檢查 bind 操作是否成功
+    bool result = bind(sock, (sockaddr*)&server, sizeof(server)) != SOCKET_ERROR;
+    closesocket(sock);//關閉 socket
+	return result;
+}
+void TForm1::stop()
+{
+	/*Image1->Visible = false;
+	Image2->Visible = false;
+	Image3->Visible = false;
+	Image4->Visible = false;
+	Image5->Visible = false;
+	Image6->Visible = false;
+	Image7->Visible = false;
+	Image8->Visible = false;
+	Image9->Visible = false;
+	Image10->Visible = false;
+	Image11->Visible = false;
+	Image12->Visible = false;*/
+    Image1->Picture->Assign(nullptr);
+    Image2->Picture->Assign(nullptr);
+    Image3->Picture->Assign(nullptr);
+    Image4->Picture->Assign(nullptr);
+    Image5->Picture->Assign(nullptr);
+    Image6->Picture->Assign(nullptr);
+    Image7->Picture->Assign(nullptr);
+    Image8->Picture->Assign(nullptr);
+    Image9->Picture->Assign(nullptr);
+    Image10->Picture->Assign(nullptr);
+    Image11->Picture->Assign(nullptr);
+    Image12->Picture->Assign(nullptr);
+}
+void TForm1::look()
+{
+	Image1->Visible = true;
+	Image2->Visible = true;
+	Image3->Visible = true;
+	Image4->Visible = true;
+	Image5->Visible = true;
+	Image6->Visible = true;
+	Image7->Visible = true;
+	Image8->Visible = true;
+	Image9->Visible = true;
+	Image10->Visible = true;
+	Image11->Visible = true;
+	Image12->Visible = true;
+}
+/*void TForm1::ResetBettingStatus()
+{
+    for (int i = 0; i < 5; i++)
+    {
+        hasbet[i] = false;
+    }
+}*/
+void TForm1::ReflashClientList()
+{
+	ComboBox1->Clear();
+	ComboBox1->Enabled=false;
+
+	if(ServerSocket1->Socket->ActiveConnections>1)//如果大於1人連線
+		ComboBox1->Items->Add("ALL");
+
+	for(int i=0;i<ServerSocket1->Socket->ActiveConnections;i++)
+		ComboBox1->Items->Add(ServerSocket1->Socket->Connections[i]->RemoteAddress+"-"+
+							IntToStr(ServerSocket1->Socket->Connections[i]->SocketHandle));
+
+	ComboBox1->ItemIndex=0;
+
+	ComboBox1->Enabled=true;
+}
+void TForm1::sticky()
+{
+	String receivedText = "這是一個測試封包";
+
+	if (receivedText.Pos("\n") > 0)
+	{
+        Memo1->Lines->Add("封包包含換行符");
+	}
+	else
+	{
+        Memo1->Lines->Add("封包不包含換行符");
+	}
+}
+void __fastcall TForm1::KickPlayer(int playerIndex)
+{
+	/*if (playerIndex < ServerSocket1->Socket->ActiveConnections)
+	{
+		TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[playerIndex];
+		clientSocket->Close(); // 主動關閉連線
+		Memo1->Lines->Add("玩家 " + IntToStr(playerIndex + 1) + " 已被斷線");
+	}*/
+
+}
+void __fastcall TForm1::DisconnectTimerEvent(TObject *Sender)//餘額不足玩家分開斷線
+{
+	Timer4->Enabled = false;
+	Sleep(100); // 等待 100 毫秒
+	Disconnect1->Click();
+}
+
+void __fastcall TForm1::Listen1Click(TObject *Sender)
+{
+	int port = ServerSocket1->Port;
+	//Memo2->Lines->Add(startok);
+    Listen1->Enabled = false;
+	if (!isPortAvailable(port))//檢查端口是否可用
+	{
+		ShowMessage("請勿重複按Listen");
+		Listen1->Enabled = true;
+		//Listen1->Checked = false;
+		return;
+	}
+	Listen1->Checked = !Listen1->Checked;//Listen1前面顯示打勾
+
+	if(Listen1->Checked)//如果Listen1有打勾
+	{
+		ClientSocket1->Active=false;//Client關掉
+		ServerSocket1->Active=true;//Server開啟
+		Connect1->Enabled=false;
+		StatusBar1->SimpleText = "Status： Chat Server Listening...";//目前是監聽狀態，等待client連線
+		blnServer = true;
+		//Button1->Visible=true;
+		//Panel1->Visible=false;
+	}
+	else
+	{
+		if(ServerSocket1->Active)//如果Server還是開啟的
+		{
+			ServerSocket1->Active = false;//關掉
+		}
+		StatusBar1->SimpleText = "Status： Chat Server sClos";//server關閉，不再處於監聽狀態，無法接收client的連線。
+		blnServer = false;
+	}
+
+	Connect1->Checked = false;
+	Disconnect1->Enabled = true;
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::Connect1Click(TObject *Sender)
+{
+	//Memo2->Lines->Add(startok);
+	Listen1->Enabled = false;
+
+	if(ClientSocket1->Active)//如果Client目前開啟的
+	{
+		ClientSocket1->Active=false;//先把Client關掉(確保是連接到新的)
+	}
+
+	strHost="127.0.0.1";//設置默認ServerIP
+	StatusBar1->SimpleText="";
+	if(InputQuery("Chat Connection","Chat Server IP",strHost))//顯示IP的輸入框
+	{
+		for (int i = 1; i <= strHost.Length(); i++)//確認只有數字或小數點
+		{
+			wchar_t ch = strHost[i];
+			//if (!isdigit(ch) && ch != '.')
+			if (strHost.Length() == 0 ||
+			std::count(strHost.begin(), strHost.end(), '.') != 3 ||
+			!std::all_of(strHost.begin(), strHost.end(), [](wchar_t ch) { return isdigit(ch) || ch == '.'; }))
+			{
+				ShowMessage("請正確輸入");
+				Listen1->Enabled = true;
+				return;
+			}
+		}
+		if(strHost.Length()>0)//如果輸入框不是空的
+		{
+			ClientSocket1 -> Host = strHost;//連接到127.0.0.1的IP
+			ClientSocket1 -> Active = true;//開啟Client
+
+			Listen1 -> Checked = false;
+			Connect1 -> Checked = true;
+			Disconnect1 -> Checked = false;
+            Connect1->Enabled = false;
+		}
+	}
+	else//如果點Cancel
+	{
+		Listen1->Enabled=true;//可以點Listen1
+	}
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::Disconnect1Click(TObject *Sender)
+{
+
+	Form1->Caption="Form1";
+	//Memo2->Lines->Add(startok);
+	isManualDisconnect = true; //標記為自己斷線
+
+	if(blnServer)
+	{
+
+	   //重新編玩家編號
+	   for (int i = 0; i < 4; i++)
+	   {
+		   if (playerSockets[i] != nullptr)
+		   {
+			   playerSockets[i]->Close();  // 斷開連線
+			   playerSockets[i] = nullptr; // 清空 socket
+		   }
+		   isConnected[i] = false; // 標記所有玩家為未連線
+	   }
+	   stop();
+	   Button1->Visible=false;
+	   ComboBox1->Clear();
+	   ComboBox1->Enabled=false;
+	   ServerSocket1->Active=false; //關閉與伺服端連接
+
+		Timer5->Enabled = false;//關閉計時器
+		Timer6->Enabled = false;//關閉計時器
+		Timer7->Enabled = false;//關閉計時器
+		Timer8->Enabled = false;//關閉計時器
+		Timer9->Enabled = false;//關閉計時器
+		Timer10->Enabled = false;//關閉計時器
+	}
+	else
+	{
+		/*if((playerNum == 1 && bettime >= 1 && bettime <= 10)||
+			(playerNum == 2 && bettime >= 10 && bettime <= 20)||
+			(playerNum == 3 && bettime >= 20 && bettime <= 30)||
+			(playerNum == 4 && bettime >= 30 && bettime <= 40))//本人抽棄牌不能斷線
+			{
+				ShowMessage("目前正在抽棄牌，無法斷線");
+
+				return;
+			}*/
+		ClientSocket1->Active=false;
+		//ClientSocket1->Socket->SendText("DISCONNECT|" + playerNum);//傳送斷線封包給server
+
+		Memo2->Lines->Add("玩家" + playerNum + "斷線");
+
+
+	}
+
+	startok = false;//遊戲結束
+	Disconnect1->Checked=false;
+	Disconnect1->Enabled=false;
+
+	StatusBar1->SimpleText = "Status：Disconnect";//顯示斷線
+
+	Listen1->Enabled=true;
+	Connect1->Enabled=true;
+	Listen1->Checked=false;
+	Connect1->Checked=false;
+
+
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TForm1::ClientSocket1Connect(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+	clientnum = ServerSocket1->Socket->ActiveConnections; //更新目前連線人數
+
+	StatusBar1->SimpleText="Status ：Connect to"+Socket -> RemoteHost;//顯示連接到哪個Server
+	Timer5->Enabled = true;
+	Timer6->Enabled = true;//{網路}
+
+	Disconnect1->Enabled=true;//連線後可以按結束連線
+	Listen1->Enabled = false;
+	Connect1->Enabled = false;
+	ComboBox1->Enabled=false;
+	remainingmoney = 200;//發牌金額初始化(嗨嗨嗨)200
+	Label6->Caption = IntToStr(remainingmoney);
+	Memo1->Clear();
+	Memo2->Clear();
+	/*if(clientnum==4)
+	{
+		look();
+	}*/
+
+
+}
+//---------------------------------------------------------------------------
+
+
+
+void __fastcall TForm1::ServerSocket1Accept(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+
+	if (startok || ServerSocket1->Socket->ActiveConnections > 4 )
+	{
+		//傳送訊息給多餘的客戶端，告知無法加入
+		Socket->SendText("exceed");
+		Memo1->Lines->Add("拒絕連線");
+		Socket->Close(); // 關閉該客戶端的連線
+		return;
+	}
+	/*String card1;
+	String card2; */
+	Timer5->Enabled = true;
+	Timer6->Enabled = true;//{網路}
+
+
+	Form1->Caption = "server";//server
+	clientnum= ServerSocket1->Socket->ActiveConnections;
+	ReflashClientList();//combobox顯示
+	Connect1->Enabled = false;
+	Disconnect1->Enabled=true;//連線後可以按結束連線
+	int playerNum = -1;//玩家編號
+	StatusBar1->SimpleText = "";
+	ComboBox1->Enabled=true;
+	blnServer = true;
+	//Memo2->Lines->Add(clientnum);
+	/*if(clientnum<=4)
+	{
+		Memo1->Lines->Add("玩家" + IntToStr(clientnum));
+		Memo1->Lines->Add(Socket->RemoteAddress + Socket->RemoteHost);
+	}
+	//傳送玩家編號給剛連線的客戶端
+	Socket->SendText("PLAYER_NUM|" + IntToStr(clientnum));*/
+
+	//玩家編號
+	for (int i = 0; i < 4; i++)
+	{
+		if (!isConnected[i])//如果有還沒連線的玩家
+		{
+			playerNum = i + 1;//玩家編號從 1 開始
+			isConnected[i] = true; // 設定為已連線
+			playerSockets[i] = Socket; //儲存 Socket 到對應的玩家位置
+			break;
+		}
+	}
+	if (playerNum == -1)
+	{
+		Memo1->Lines->Add("錯誤：無法分配玩家編號！");
+		return;
+	}
+	isConnected[playerNum - 1] = true;//標記該玩家編號已被占用
+	//顯示玩家連線資訊
+	Memo1->Lines->Add("玩家" + IntToStr(playerNum));
+	Memo1->Lines->Add(Socket->RemoteAddress + Socket->RemoteHost);
+	Socket->SendText("PLAYER_NUM|" + IntToStr(playerNum));//傳送玩家編號給client
+
+	if(clientnum==4)
+	{
+		Button1->Visible=true;
+		Button1->Enabled=true;
+	}
+	else
+	{
+		Button1->Enabled=false;
+	}
+
+	if(playerNum == 1)
+	{
+		Timer7->Enabled = true;
+	}
+	if(playerNum == 2)
+	{
+		Timer8->Enabled = true;
+	}
+	if(playerNum == 3)
+	{
+		Timer9->Enabled = true;
+	}
+	if(playerNum == 4)
+	{
+		Timer10->Enabled = true;
+	}//{網路}
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::ClientSocket1Disconnect(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+	//client收到server斷線
+	Form1->Caption = "Form1";
+
+	//Disconnect1->Enabled=false;//不可以重複按斷線
+
+	ClientSocket1->Socket->SendText("@DISCONNECT|" + playerNum +"@");//傳送斷線封包給server
+	if(playerNum == 4 && bettime >= 30 && bettime <= 40)//如果玩家4斷線，並且目前是玩家4選擇抽棄牌
+	{
+		startok = false;//遊戲結束
+	}
+
+	Timer1->Enabled = false;
+	Timer2->Enabled = false;
+	Timer3->Enabled = false;
+	Timer4->Enabled = false;
+	Timer5->Enabled = false;
+	Timer6->Enabled = false;
+	/*Timer7->Enabled = false;
+	Timer8->Enabled = false;
+	Timer9->Enabled = false;
+	Timer10->Enabled = false;*/
+
+	if (!isManualDisconnect)//如果不是client自己手動斷線
+	{
+		ShowMessage("與server的連線已中斷，請重新連線。");
+	}
+	isManualDisconnect = false;
+
+	stop();
+	Listen1->Enabled=true;
+	Connect1->Enabled=true;
+	Listen1->Checked=false;
+	Connect1->Checked=false;
+
+	Connect1->Enabled=true;//變成可以重新連線
+	Disconnect1->Enabled=false;//已經斷線不可重新再按連線
+	ReflashClientList();
+
+	Timer1->Enabled = false;//停止自己的計時
+	Timer3->Enabled=false;
+	bettime = 0;
+	startok = false;
+	Label5->Visible=false;
+	Label6->Visible=false;
+	GroupBox1->Visible=false;
+	GroupBox2->Visible=false;
+	Label7->Visible=false;
+	Label9->Visible=false;
+	/*Memo1->Clear();
+	Memo2->Clear();*/
+	StatusBar1->SimpleText = "";
+	Memo2->Lines->Add("與Server斷開連線");
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::ServerSocket1ClientDisconnect(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+	clientnum = ServerSocket1->Socket->ActiveConnections; // 更新目前連線人數
+	Form1->Caption = "Form1";
+	String receivedText = Socket->ReceiveText();
+
+	if(clientnum<=1)//如果所有玩家都斷線
+	{
+		StatusBar1->SimpleText = "Status： Listening...";
+		startok = false;//遊戲結束
+		Memo1->Lines->Add("所有玩家都斷線");
+		stop();
+	}
+	if(clientnum==2)//如果所有玩家都斷線{這邊}
+	{
+		StatusBar1->SimpleText = "Status： Listening...";
+		startok = false;//遊戲結束
+		Memo1->Lines->Add("只剩一個玩家，遊戲提前結束");
+
+        for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++) // 傳給所有目前連線玩家
+		{
+			TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+			clientSocket->SendText("last");
+		}
+		stop();
+	}
+
+	ComboBox1->Enabled=false;//
+	Timer2->Enabled=true;
+
+	Listen1->Enabled=true;
+	Connect1->Checked=false;
+	//Timer3->Enabled=false;
+	//bettime = 0;
+
+	Form1->Caption = "Form1";
+
+	clientnum = ServerSocket1->Socket->ActiveConnections - 1;//有玩家斷線clientnum-1
+	//Memo2->Lines->Add(clientnum);
+	if(clientnum < 4)
+	{
+		Button1->Enabled = false;
+	}
+
+	for (int i = 0; i < 4; i++)
+	{
+		if (playerSockets[i] == Socket)//如果找到斷線的玩家
+		{
+			playerNum = -1;
+			playerSockets[i] = nullptr;//清空該位置的Socket
+			isConnected[i] = false;//改成沒連線
+			break;
+		}
+	}
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::ServerSocket1ClientConnect(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+	clientnum=ServerSocket1->Socket->ActiveConnections;
+	String receivedText = Socket->ReceiveText();
+	//Timer2->Enabled=true;
+	/*if(clientnum>4)
+	{
+		Memo2->Lines->Add("人數已滿");
+		Socket->SendText("exceed");
+		//Socket->Close();
+		return;
+	}*/
+	/*if(clientnum == 4 && startok == false)新刪掉(好像沒用)
+	{
+		 for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		 {
+			ServerSocket1->Socket->Connections[i]->SendText("GAME_START");
+		 }
+		 //Button1->Enabled=true;
+	}*/
+
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::ClientSocket1Read(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+	String receivedText = Socket->ReceiveText();
+	//Memo2->Lines->Add(receivedText);
+	Form2->Memo3->Lines->Add(receivedText);
+
+	int server_total=0;
+	int client_total=0;
+
+	String msg = Socket->ReceiveText();
+	String msg1=Socket->ReceiveText();
+	String numBtn;
+	String result;
+
+	//各個玩家顯示背面的image
+	TImage* images1back[] = { Image3, Image4, Image5, Image6, Image7, Image8 };//玩家1
+	TImage* images2back[] = { Image1, Image2, Image5, Image6, Image7, Image8 };//玩家2
+	TImage* images3back[] = { Image1, Image2, Image3, Image4, Image7, Image8 };//玩家3
+	TImage* images4back[] = { Image1, Image2, Image3, Image4, Image5, Image6 };//玩家4
+
+	// 拆分並處理封包
+	TStringList *parts = new TStringList();//用於儲存拆分後的字串
+	if (receivedText.Pos("@") > 0)
+	{
+		parts->Delimiter = '@';
+		parts->DelimitedText = receivedText;//根據設置的內容進行分隔，儲存在 parts 中
+		String temporary; // 暫存文字
+		String temporary2; //暫存文字
+		String allParts;//用於儲存所有拆分的部分
+
+		for (int i = 0; i < parts->Count; i++)//拆分
+		{
+			temporary = parts->Strings[i];
+			if (temporary.Trim() != "") // 確保不處理空字符串
+			{
+				Form2->Memo3->Lines->Add("更新以後：" + temporary);
+
+
+
+
+				allParts += temporary + "@"; // 將所有部分合併
+			}
+		}
+
+		receivedText = allParts;//更新 receivedText 為所有部分的合併結果
+		while (receivedText.Pos("@") > 0)//字串裡面有包含@的話
+		{
+			int pos = receivedText.Pos("@");
+			receivedText.Delete(pos, 1); // 刪除 @
+		}
+	}
+	delete parts; // 釋放 TStringList 的記憶體
+
+	if (receivedText.Pos("last"))//只剩一個玩家
+	{
+		Memo2->Lines->Add("只剩一個玩家，遊戲提前結束");
+		Disconnect1->Click();
+	}
+
+	if (receivedText.SubString(1, 11) == "PLAYER_NUM|")//是否以PLAYER_NUM|開頭(判斷第幾個玩家7)
+	{
+		//提取玩家編號
+		playerNum = receivedText.SubString(12, 1);//提取第12個字
+		Form1->Caption = "玩家" + playerNum;
+	}
+
+	/*if (receivedText.Pos("PING") == 1)//確認網路是否有斷線{這裡網路}
+	{
+		wifiServer = true;//server有傳給client
+		//Form2->Memo3->Lines->Add("server連線：" + String(wifiServer ? "true" : "false"));
+		Socket->SendText("@OK@");//回傳OK給 Server
+
+	}*/
+	if (receivedText.Pos("OK|") == 1)
+	{
+		String oknum = receivedText.SubString(4, receivedText.Length() - 3);
+		int oknumint = StrToInt(oknum);
+		ClientOK[oknumint] = true; // 只標記該玩家為 true
+		//Form2->Memo3->Lines->Add("玩家" + String(oknumint) + "連線：" + String(ClientOK[oknumint] ? "true" : "false"));
+		//if (oknumint >= 1 && oknumint < ClientOK.size()) // 確保索引有效
+		//{
+			//ClientOK[oknumint] = true; // 只標記該玩家為 true
+		//}
+		//Timer5->Enabled = true;
+	}
+	if (receivedText.Pos("TOTAL_MONEY|") == 1)//總金額
+	{
+		/*receivedText = receivedText.SubString(13, receivedText.Length() - 12);
+
+		Memo2->Lines->Add("累計金額：" + receivedText);//顯示累計金額*/
+        // 將接收到的訊息按行分割
+		TStringList *messages = new TStringList();
+		messages->Text = receivedText;
+
+		for (int i = 0; i < messages->Count; i++)
+		{
+			String moneyMsg = messages->Strings[i].SubString(13, messages->Strings[i].Length() - 12);
+			Memo2->Lines->Add("累計金額：" + moneyMsg); // 顯示累計金額
+		}
+
+		delete messages; // 釋放內存
+	}
+
+	if (receivedText.Pos("GAMEOVER|") == 1)
+	{
+		String playersList = receivedText.SubString(10, receivedText.Length() - 9);
+		TStringList* players = new TStringList();
+		players->Delimiter = ',';//,是分隔符號
+		players->DelimitedText = playersList;//自動拆
+
+		//首先檢查自己是否在列表中，並記錄自己的位置
+		int myPosition = -1;
+		for (int i = 0; i < players->Count; i++)//迴圈所有的GAMEOVER玩家
+		{
+			if (players->Strings[i] != "") //確保字串不為空
+			{
+				int playerNum2 = StrToInt(players->Strings[i]);
+				if (playerNum2 == playerNum)
+				{
+					myPosition = i;
+					Memo2->Lines->Add("剩餘金額不足即將斷線");
+					break;
+				}
+			}
+		}
+		if (myPosition >= 0)//如果有要斷線的玩家
+		{
+			int delayTime = (myPosition + 1) * 100;//每個玩家斷線的時間間隔
+
+			//使用計時器來延遲斷線
+			Timer4->Interval = delayTime;
+			Timer4->OnTimer = DisconnectTimerEvent;
+			Timer4->Enabled = true;
+		}
+
+		delete players;
+	}
+	if(receivedText.Pos("DISCONNECT|") == 1)//判斷哪個玩家斷線
+	{
+		receivedText = receivedText.SubString(12, 1);
+		Memo2->Lines->Add("玩家" + receivedText + "斷線");
+
+		//stop();
+		//Timer1->Enabled = false;//停止計時
+		//Bettingtime = 10;
+	}
+
+	if(receivedText.Pos("exceed") == 1)
+	{
+		StatusBar1->SimpleText = "";
+		ShowMessage("目前無法加入遊戲");
+		Connect1 -> Checked = false;
+		Listen1 -> Enabled = true;
+		Memo1->Clear();//清除memo1的東西
+		ClientSocket1->Close();
+		return;
+	}
+	if(receivedText.Pos("PLAYER_SUCCESS|") == 1)//接收到玩家射龍分的訊息
+	{
+		//PLAYER_SUCCESS|玩家編號|累積金額
+		String successPlayer = receivedText.SubString(16, 1);//玩家編號
+		String moneyStr = receivedText.SubString(18 , receivedText.Length()-17);//玩家累積金額
+		int winAmount = StrToIntDef(moneyStr, 0);//金額轉INT
+
+		if (successPlayer == playerNum)  // 如果是當前玩家
+		{
+			remainingmoney += winAmount;//更新玩家金額
+			Label6->Caption = IntToStr(remainingmoney); //更新顯示
+			Memo2->Clear();
+			Memo2->Lines->Add("你射龍門成功！贏得了 " + IntToStr(winAmount) + " 元！");
+			Memo2->Lines->Add("遊戲結束");
+			Timer3->Enabled=false;//停止計時
+			quicksmoke=false;//全都改為沒抽過牌
+			bettime = 0;//抽棄牌計時變0
+			//Image9->Picture->Assign(nullptr);//把抽過的牌清除
+		}
+		else
+		{
+			Memo2->Clear();
+			Memo2->Lines->Add("玩家" + successPlayer + "射龍門成功！贏得了 " + IntToStr(winAmount) + " 元！");
+			Memo2->Lines->Add("遊戲結束");
+			Timer3->Enabled=false;//停止計時
+			quicksmoke=false;//全都改為沒抽過牌
+			bettime = 0;//抽棄牌計時變0
+			Image9->Picture->Assign(nullptr);//把抽過的牌清除
+			Image10->Picture->Assign(nullptr);//把抽過的牌清除
+			Image11->Picture->Assign(nullptr);//把抽過的牌清除
+			Image12->Picture->Assign(nullptr);//把抽過的牌清除
+		}
+	}
+	if(receivedText.Pos("PLAYER_SUCCESSNO|") == 1)//接收到玩家沒射龍分的訊息
+	{
+		//PLAYER_SUCCESSNO|玩家編號
+		String successPlayer = receivedText.SubString(18, 1);//玩家編號
+		Memo2->Lines->Add("玩家 " + successPlayer + " 沒射龍門");
+
+		successnonum = successnonum+1;
+		if(successnonum == clientnum)//如果沒設龍門的玩家數量=目前的玩家數量
+		{
+			Timer3->Enabled=false;
+			bettime = 0;
+		}
+
+	}
+	if (receivedText.Pos("UPDATE_TIME|") == 1 ) //更新時間
+	{
+		String timeStr = receivedText.SubString(13, receivedText.Length() - 12);
+		bettime = StrToInt(timeStr);  // 更新時間
+		Label7->Caption = bettime;
+	}
+	if (receivedText.Pos("CARDAS|") == 1) //抽牌
+	{
+		// 提取卡牌名稱 (從第8個字開始到結尾)
+		String cardName = receivedText.SubString(8, receivedText.Length() - 7);
+		// 更新圖片顯示 (Image 控件)
+		if(playerNum == 1)
+		{
+			Image9->Picture->LoadFromFile("image\\" + cardName + ".bmp");
+		}
+		if(playerNum == 2)
+		{
+			Image10->Picture->LoadFromFile("image\\" + cardName + ".bmp");
+		}
+		if(playerNum == 3)
+		{
+			Image11->Picture->LoadFromFile("image\\" + cardName + ".bmp");
+		}
+		if(playerNum == 4)
+		{
+			Image12->Picture->LoadFromFile("image\\" + cardName + ".bmp");
+		}
+		Memo2->Lines->Add("收到卡牌: " + cardName);
+		startok = true;//玩家無法加入
+
+		//找到牌的大小
+		String lastCardnew = cardName.SubString(2, cardName.Length() - 1);//找最後一個字，用來比大小
+		if (lastCardnew == "A") valuenew = 1;
+		else if (lastCardnew == "10") valuenew = 10;//88888
+		else if (lastCardnew == "J") valuenew = 11;
+		else if (lastCardnew == "Q") valuenew = 12;
+		else if (lastCardnew == "K") valuenew = 13;
+		else valuenew = StrToInt(lastCardnew);
+
+		if ((value1 < valuenew && valuenew < value2) || (value1 > valuenew && valuenew > value2))
+		{
+			Memo2->Lines->Add("玩家" + playerNum + "射龍門");
+			if (ClientSocket1->Active)//確認已連線到 Server
+			{
+				ClientSocket1->Socket->SendText("SUCCESS|YES|" + playerNum);//傳給server
+				//ClientSocket1->Socket->SendText("SUCCESS|YES");//傳給server
+			}
+		}
+		else
+		{
+			Memo2->Lines->Add("玩家" +playerNum + "沒射龍門");
+			if (ClientSocket1->Active)//確認已連線到 Server
+			{
+				successnonum = successnonum +1 ;//沒設龍門的玩家數量+1
+				ClientSocket1->Socket->SendText("SUCCESS|NO|" + playerNum);//傳給server
+                
+				if(successnonum == clientnum)//如果沒設龍門的玩家數量=目前的玩家數量
+				{
+					Timer3->Enabled=false;//停止計時
+					quicksmoke=false;//全都改為沒抽過牌
+					bettime = 0;//抽棄牌計時變0
+				}
+				//ClientSocket1->Socket->SendText("SUCCESS|NO");//傳給server
+			}
+		}
+
+	}
+
+	if (receivedText.Pos("CARDS|") == 1)//如果是CARDS|開頭回傳1(四人連線開始遊戲)
+	{
+		Timer3->Enabled=false;
+		Memo2->Clear();
+		for (int i = 0; i < 4; i++)
+		{
+			hasbet[i] = false;//預設所有玩家尚未下注
+		}
+		quicksmoke = false;//所有玩家沒發牌
+		TStringList *cards = new TStringList();
+
+		try
+		{
+			cards->Delimiter = '|';//系統會以 | 將訊息切割
+			cards->DelimitedText = receivedText;//自動按照分隔符 | 將字串切割成多個部分
+
+
+			if (cards->Count >= 3)//如果訊息至少有三個部分（CARDS|card1|card2）
+			{
+
+				Label1->Visible=true;
+				Label2->Visible=true;
+				Label3->Visible=true;
+				Label4->Visible=true;
+
+				String card1 = cards->Strings[1];
+				String card2 = cards->Strings[2];
+
+				//找到牌的大小
+				String lastCard1 = card1.SubString(2, card2.Length() - 1);//找最後一個字，用來比大小
+				String lastCard2 = card2.SubString(2, card2.Length() - 1);
+				if (lastCard1 == "A") value1 = 1;
+				else if (lastCard1 == "10") value1 = 10;
+				else if (lastCard1 == "J") value1 = 11;
+				else if (lastCard1 == "Q") value1 = 12;
+				else if (lastCard1 == "K") value1 = 13;
+				else value1 = StrToInt(lastCard1);
+				if (lastCard2 == "A") value2 = 1;
+				else if (lastCard2 == "10") value2 = 10;
+				else if (lastCard2 == "J") value2 = 11;
+				else if (lastCard2 == "Q") value2 = 12;
+				else if (lastCard2 == "K") value2 = 13;
+				else value2 = StrToInt(lastCard2);
+
+				String card1ImagePath = "image\\" + card1 + ".bmp"; // 假設圖像存放於 images 資料夾
+				String card2ImagePath = "image\\" + card2 + ".bmp";
+
+				if (FileExists(card1ImagePath))//檢查卡片是否存在
+				{
+					if(playerNum == 1)
+					{
+						Image1->Picture->LoadFromFile(card1ImagePath);
+						for (TImage* img : images1back)//顯示背面
+						{
+							img->Picture->LoadFromFile("image\\back.bmp");
+						}
+					}
+					if(playerNum == 2)
+					{
+						Image3->Picture->LoadFromFile(card1ImagePath);
+						for (TImage* img : images2back)//顯示背面
+						{
+							img->Picture->LoadFromFile("image\\back.bmp");
+						}
+					}
+					if(playerNum == 3)
+					{
+						Image5->Picture->LoadFromFile(card1ImagePath);
+						for (TImage* img : images3back)//顯示背面
+						{
+							img->Picture->LoadFromFile("image\\back.bmp");
+						}
+					}
+					if(playerNum == 4)
+					{
+						Image7->Picture->LoadFromFile(card1ImagePath);
+						for (TImage* img : images4back)//顯示背面
+						{
+							img->Picture->LoadFromFile("image\\back.bmp");
+						}
+					}
+				}
+				else
+				{
+					Memo2->Lines->Add("無法找到卡片圖像: " + card1ImagePath);
+				}
+
+				if (FileExists(card2ImagePath))
+				{
+					if(playerNum == 1)
+					{
+						Image2->Picture->LoadFromFile(card2ImagePath);
+					}
+					if(playerNum == 2)
+					{
+						Image4->Picture->LoadFromFile(card2ImagePath);
+					}
+					if(playerNum == 3)
+					{
+						Image6->Picture->LoadFromFile(card2ImagePath);
+					}
+					if(playerNum == 4)
+					{
+						Image8->Picture->LoadFromFile(card2ImagePath);
+					}
+				}
+				else
+				{
+					Memo2->Lines->Add("無法找到卡片圖像: " + card2ImagePath);
+				}
+			}
+		}
+
+		__finally
+		{
+			delete cards;//釋放之前創建的 cards 資源
+		}
+		look();//看到牌
+		startok = true;
+        bettime = 0;//下注金額倒數計時變0
+		Sleep(100);
+		GroupBox1->Visible=true;//可以開始選擇是否要下注
+		GroupBox1->Enabled=true;//可以開始選擇是否要下注
+		Bettingtime = 6;//下注時間
+		Timer1->Enabled = true;//時間到自動下注
+		Label5->Visible=true;
+		Label6->Visible=true;
+		Image9->Picture->Assign(nullptr);//把抽過的牌清除
+		Image10->Picture->Assign(nullptr);//把抽過的牌清除
+		Image11->Picture->Assign(nullptr);//把抽過的牌清除
+		Image12->Picture->Assign(nullptr);//把抽過的牌清除
+
+
+	}
+
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button1Click(TObject *Sender)
+{
+	dealtCards->Clear();
+	String card1;
+	String card2;
+	successnonum = 0;//沒設龍門數量重製
+	if(clientnum==4)
+	{
+		/*Timer5->Enabled = true;
+		Timer6->Enabled = true;*/
+		Memo1->Lines->Add("4人連線，開始發牌：");
+		for (int i = 0; i < 4; i++)//依照玩家編號順序發牌
+		{
+			if (playerSockets[i] != nullptr && playerSockets[i]->Connected)//
+			{
+                card1 = DealCard();
+				card2 = DealCard();
+				String message = "@CARDS|" + card1 + "|" + card2+"@";
+				playerSockets[i]->SendText(message);
+				Memo1->Lines->Add("發牌給玩家" + IntToStr(i + 1) + ": " + card1 + ", " + card2);
+				Label1->Visible=true;
+				Label2->Visible=true;
+                Label3->Visible=true;
+				Label4->Visible=true;
+
+                // 根據玩家編號顯示牌
+				TImage *image1, *image2;
+                if (i == 0)//玩家1
+				{
+					image1 = Image1;
+					image2 = Image2;
+				}
+				else if (i == 1)//玩家2
+				{
+					image1 = Image3;
+					image2 = Image4;
+				}
+				else if (i == 2)//玩家3
+				{
+					image1 = Image5;
+					image2 = Image6;
+				}
+				else if (i == 3)//玩家4
+				{
+					image1 = Image7;
+					image2 = Image8;
+				}
+				image1->Picture->LoadFromFile("image\\" + card1 + ".bmp");
+				image2->Picture->LoadFromFile("image\\" + card2 + ".bmp");
+			}
+		}
+		look();
+		startok = true;
+		/*String timeUpdateMsg = "@UPDATE_TIME|0@";//下注金額倒數計時變0
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		{
+			ServerSocket1->Socket->Connections[i]->SendText(timeUpdateMsg);
+		}*/
+	}
+	Button1->Enabled=false;
+	Image9->Picture->Assign(nullptr);
+	Image10->Picture->Assign(nullptr);
+	Image11->Picture->Assign(nullptr);
+	Image12->Picture->Assign(nullptr);
+}
+//---------------------------------------------------------------------------
+
+
+
+void __fastcall TForm1::ServerSocket1ClientError(TObject *Sender, TCustomWinSocket *Socket,
+		  TErrorEvent ErrorEvent, int &ErrorCode)
+{
+	StatusBar1->SimpleText = "Error from Client socket.";
+	if(ErrorCode==10053)
+	{
+		Memo1->Lines->Add("連線時間過長");
+        if (!ClientSocket1->Active)
+		{
+			ClientSocket1->Active = true;//嘗試重新連接
+		}
+		//ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+		//return;
+	}
+	if(ErrorCode==10060)
+	{
+		Memo1->Lines->Add("連線超時");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==11001)//
+	{
+		ShowMessage("請正確輸入");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10049)//
+	{
+		ShowMessage("請正確輸入");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10061)//房主未開房
+	{
+		Memo1->Lines->Add("未連線成功");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10065)//網路問題
+	{
+		Memo1->Lines->Add("連線錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10050)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+
+	}
+	if(ErrorCode==10051)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+
+	}
+	if(ErrorCode==10052)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	/*if(ErrorCode==10053)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if (ErrorCode == 10054)//網路異常
+	{
+		Memo2->Lines->Add("網路異常");
+		//ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		//Disconnect1->Click();
+		ErrorCode = 0;
+	}*/
+	if(ErrorCode == 0)
+	{
+        return;
+    }
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::ClientSocket1Error(TObject *Sender, TCustomWinSocket *Socket,
+          TErrorEvent ErrorEvent, int &ErrorCode)
+{
+	if(ErrorCode==10053)
+	{
+		Memo2->Lines->Add("連線時間過長");
+		if (!ClientSocket1->Active)
+		{
+			ClientSocket1->Active = true;//嘗試重新連接
+		}
+		//ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Disconnect1-> Enabled = false;
+        ErrorCode = 0;
+		//return;
+	}
+	if(ErrorCode==10060)
+	{
+		Memo2->Lines->Add("連線超時");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+        Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if (ErrorCode == 11001)
+	{
+		ShowMessage("請正確輸入");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if (ErrorCode == 10049)
+	{
+		ShowMessage("請正確輸入");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10061)//房主未開房
+	{
+		Memo2->Lines->Add("未連線成功");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+        Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10065)//網路問題
+	{
+		Memo2->Lines->Add("連線錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+        Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if(ErrorCode==10050)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+
+	}
+	if(ErrorCode==10051)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+
+	}
+	if(ErrorCode==10052)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	/*if(ErrorCode==10053)//網路問題
+	{
+		Memo2->Lines->Add("網路錯誤");
+		ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		ErrorCode = 0;
+	}
+	if (ErrorCode == 10054)//網路異常
+	{
+		Memo2->Lines->Add("網路異常");
+		//ClientSocket1->Active = false;//關閉客戶端連接
+		Connect1 -> Checked = false;
+		Listen1->Enabled=true;
+		Connect1->Enabled = true;
+		Disconnect1-> Enabled = false;
+		//Disconnect1->Click();
+		ErrorCode = 0;
+	}*/
+	if(ErrorCode == 0)
+	{
+		return;
+	}
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TForm1::ServerSocket1ClientRead(TObject *Sender, TCustomWinSocket *Socket)
+
+{
+
+	String receivedText = Socket->ReceiveText();//接收來自 Client 的訊息
+	clientnum= ServerSocket1->Socket->ActiveConnections;
+	//Memo3->Lines->Add(receivedText);
+	Form2->Memo3->Lines->Add(receivedText);
+	std::vector<int> insufficientPlayers;
+	//Memo2->Lines->Add(clientnum);
+
+	//判斷是玩家幾
+	int playerIndex = -1;
+	for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+	{
+		if (Socket == ServerSocket1->Socket->Connections[i])
+		{
+			playerIndex = i;  // 找到該玩家索引
+			break;
+		}
+	}
+
+	// 拆分並處理封包
+	TStringList *parts = new TStringList(); // 用於儲存拆分後的字串
+	if (receivedText.Pos("@") > 0)
+	{
+		parts->Delimiter = '@';
+		parts->DelimitedText = receivedText; // 根據設置的內容進行分隔，儲存在 parts 中
+		String temporary; // 暫存文字
+		String temporary2; // 暫存文字
+		String allParts; // 用於儲存所有拆分的部分
+
+
+		for (int i = 0; i < parts->Count; i++) // 拆分
+		{
+			temporary = parts->Strings[i]; // 獲得當前拆分的部分
+			if (temporary.Trim() != "") // 確保不處理空字符串
+			{
+				Form2->Memo3->Lines->Add("更新以後：" + temporary);
+				allParts += temporary + "@"; // 將所有部分合併
+			}
+		}
+		receivedText = allParts;//更新 receivedText 為所有部分的合併結果
+		while (receivedText.Pos("@") > 0)//刪除所有 '@' 字符
+		{
+			int pos = receivedText.Pos("@");
+			receivedText.Delete(pos, 1); // 刪除 @
+
+		}
+	}
+    delete parts; // 釋放 TStringList 的記憶體
+
+	//判斷是否為金錢更新訊息
+	if (receivedText.Pos("BET|") == 1)//確認訊息是以 "BET|" 開頭
+	{
+
+		//提取金錢數值
+		String moneyStr = receivedText.SubString(5, receivedText.Length() - 4);
+		int receivedMoney = StrToIntDef(moneyStr, 0);//轉換回int
+		totalmoney = totalmoney + receivedMoney;//更新總金錢
+		Memo1->Lines->Add("累計金額：" + IntToStr(totalmoney));//顯示累計金額
+		//回傳最新金錢總額給所有 Client
+
+		String response = "TOTAL_MONEY|" + IntToStr(totalmoney)+ "\n";
+
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		{
+			TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+			clientSocket->SendText(response);
+		}
+	}
+	//確認網路是否有斷線
+	else if (receivedText.Pos("PING|") == 1)
+	{
+		//String startPos = receivedText.SubString(6, receivedText.Length() - 5);
+        String startPos = receivedText.SubString(6, 1);
+		int playerIndex = StrToInt(startPos);
+
+		if (playerIndex >= 0) // 確保玩家編號有效
+		{
+			wifiClient[playerIndex] = true; // 把有傳送封包的玩家的 wifiClient 變成 true
+			//Form2->Memo3->Lines->Add("玩家" + String(playerIndex) + "連線：" + String(wifiClient[playerIndex] ? "true" : "false"));
+			Socket->SendText("@OK|" + startPos+"@"); // 回傳 "OK|X" 給該玩家
+		}
+	}
+
+	else if (receivedText.Pos("OK") == 1)
+	{
+		ServerOK = true;//有收到ok
+		//Form2->Memo3->Lines->Add("server連線：" + String(ServerOK ? "true" : "false"));
+		//Timer5->Enabled = true;
+	}
+
+	//剩餘金額MONEY|玩家編號|剩餘金額
+	else if (receivedText.Pos("MONEY|") == 1)
+	{
+		int  moneynum = receivedText.SubString(7, 1).ToInt();//玩家編號
+		int  remainingmoney = receivedText.SubString(9 , receivedText.Length()-8).ToInt();//剩餘金額
+		playerMoney[moneynum] = remainingmoney;// 記錄該玩家的剩餘金額
+
+	}
+	else if (receivedText.Pos("DISCONNECT|") == 1)
+	{
+		// 提取玩家編號
+		String DisconnectNum = receivedText.SubString(12, 1);  // 提取第12個字
+		Memo1->Lines->Add("玩家" + DisconnectNum + "斷線");
+		isConnected[StrToInt(DisconnectNum-1)] = false;//將斷線玩家變成false
+		//isConnected[StrToInt(DisconnectNum)] = false;//將斷線玩家變成false
+		//stop();
+		String disconnectMessage = "@DISCONNECT|" + DisconnectNum +"@";
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)//目前有多少client正在連線
+		{
+			TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];//取出每個server
+			if (clientSocket != Socket)//避免把斷線訊息發送給自己
+			{
+				clientSocket->SendText(disconnectMessage);
+			}
+		}
+        if (DisconnectNum == "4" && newTime >= 30 && newTime <= 40)//如果玩家4斷線，並且目前是玩家4選擇抽棄牌
+		{
+			startok = false;//判斷為遊戲還沒開始
+			stop();
+			Memo1->Clear();
+			Memo1->Lines->Add("遊戲結束");
+
+
+            // 收集所有餘額不足的玩家
+			//std::vector<int> insufficientPlayers;
+			//遍歷 playerMoney 容器中的所有玩家金額
+			for (auto it = playerMoney.begin(); it != playerMoney.end(); ++it)
+			{
+				int playerNum = it->first;
+				int remainingmoney = it->second;
+				if (remainingmoney < 5) // 如果玩家餘額不足
+				{
+					insufficientPlayers.push_back(playerNum);
+				}
+				Memo1->Lines->Add(remainingmoney);
+			}
+			//構建一個包含所有餘額不足玩家的封包
+			if (!insufficientPlayers.empty())
+			{
+				String combinedGameOverMsg = "GAMEOVER|";
+
+				for (size_t i = 0; i < insufficientPlayers.size(); i++)
+				{
+					combinedGameOverMsg += IntToStr(insufficientPlayers[i]);
+					if (i < insufficientPlayers.size() - 1)
+					{
+						combinedGameOverMsg += ",";
+					}
+				}
+				// 發送組合封包給所有玩家
+				for (int i = 0; i < ServerSocket1->Socket->ActiveConnections-1; i++)//不傳給玩家4
+				{
+					TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+					Sleep(50); // 等個 50 毫秒
+					clientSocket->SendText(combinedGameOverMsg);
+				}
+				// 記錄日誌
+				for (int playerNum : insufficientPlayers)
+				{
+					Memo1->Lines->Add("玩家 " + IntToStr(playerNum) + " 餘額不足，通知離線");
+				}
+			}
+		}
+
+		Timer1->Enabled = false;//停止計時
+		Bettingtime = 6;
+		Timer3->Enabled=false;
+		bettime = 0;
+		//startok = false;
+
+
+		int playerIndex = StrToInt(DisconnectNum) - 1;//玩家編號
+		if (playerAction[playerIndex] == true)//如果那個玩家已經已經按下抽牌或棄牌
+		{
+			successnonum--; // 如果已經按下抽牌或棄牌，則減少 successnonum
+		}
+
+		if(DisconnectNum == 1)
+		{
+			Timer7->Enabled = false;
+		}
+		if(DisconnectNum == 2)
+		{
+			Timer8->Enabled = false;
+		}
+		if(DisconnectNum == 3)
+		{
+			Timer9->Enabled = false;
+		}
+		if(DisconnectNum == 4)
+		{
+			Timer10->Enabled = false;
+		}
+	}
+
+	else if (receivedText.Pos("DRAW|YES") == 1)  // 抽牌
+	{
+		String DRAWYESNum = receivedText.SubString(9, 1);//玩家幾抽牌
+		String card1 = DealCard();  //抽一張牌
+		String message = "CARDAS|" + card1 ;  // 建立回應訊息
+		//發送牌組給客戶端
+		Socket->SendText(message);//使用當前的 Socket 發送訊息
+
+		TImage *targetImage = nullptr;
+		if (DRAWYESNum == 1) targetImage = Image9;  // 玩家 1
+		else if (DRAWYESNum == 2) targetImage = Image10;  // 玩家 2
+		else if (DRAWYESNum == 3) targetImage = Image11;  // 玩家 3
+		else if (DRAWYESNum == 4) targetImage = Image12;  // 玩家 4
+
+		if (targetImage)//確保 targetImage 不為空
+		{
+			targetImage->Picture->LoadFromFile("image\\" + card1 + ".bmp");
+			Memo1->Lines->Add("發牌給玩家 " + IntToStr(playerIndex + 1) + ": " + card1);
+		}
+		else
+		{
+			Memo1->Lines->Add("找不到" + IntToStr(playerIndex));
+		}
+
+        //玩家更改時間
+		if (DRAWYESNum == 1) newTime = 10;  // 玩家 1
+		else if (DRAWYESNum == 2) newTime = 20;  // 玩家 2
+		else if (DRAWYESNum == 3) newTime = 30;  // 玩家 3
+		else if (DRAWYESNum == 4) newTime = 40;  // 玩家 4
+		// 通知所有玩家更新時間
+		String timeUpdateMsg = "UPDATE_TIME|" + IntToStr(newTime);
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		{
+			ServerSocket1->Socket->Connections[i]->SendText(timeUpdateMsg);
+		}
+        playerAction[StrToInt(DRAWYESNum) - 1] = true; // 設置該玩家已按抽牌
+	 }
+
+	else if (receivedText.Pos("DRAW|NO") == 1) //不抽牌
+	{
+		String DRAWNONum = receivedText.SubString(8, 1);//玩家幾抽牌
+
+		TImage *targetImage = nullptr;
+		//玩家時間更新
+		if (DRAWNONum == 1) newTime = 10;  // 玩家 1
+		else if (DRAWNONum == 2) newTime = 20;  // 玩家 2
+		else if (DRAWNONum == 3) newTime = 30;  // 玩家 3
+		else if (DRAWNONum == 4) newTime = 40;  // 玩家 4
+		String timeUpdateMsg = "UPDATE_TIME|" + IntToStr(newTime);
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		{
+			ServerSocket1->Socket->Connections[i]->SendText(timeUpdateMsg);
+		}
+		playerAction[StrToInt(DRAWNONum) - 1] = true; // 設置該玩家已按棄牌
+	}
+	else if (receivedText.Pos("SUCCESS|YES|") == 1)//射龍門
+	{
+		String successyes = receivedText.SubString(13, 1);
+        Memo1-> Clear();
+		Memo1->Lines->Add("玩家" + successyes + "射龍門");
+
+		//通知其他玩家有人射龍門了，更新金額
+		String playerSuccessMsg = "PLAYER_SUCCESS|" + successyes + "|" + totalmoney;
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+		{
+			ServerSocket1->Socket->Connections[i]->SendText(playerSuccessMsg);
+		}
+		int awardedMoney = totalmoney;// 記錄累積金額
+		totalmoney = 0;
+		//Memo1->Lines->Add("累計金額：" + IntToStr(awardedMoney));
+		//Memo1->Lines->Add(clientnum);
+		startok = false;//判斷為遊戲還沒開始
+		stop();
+		Memo1->Lines->Add("遊戲結束");
+
+		for (auto it = playerMoney.begin(); it != playerMoney.end(); ++it)
+		{
+			int playerNum = it->first;
+			int remainingmoney = it->second;
+
+			if (playerNum == StrToInt(successyes))//如果是射龍門的玩家，將獎金加到其餘額中
+			{
+				remainingmoney += awardedMoney;
+			}
+			if (remainingmoney < 5) // 如果玩家餘額不足
+			{
+				insufficientPlayers.push_back(playerNum);
+			}
+			//Memo1->Lines->Add(remainingmoney);
+		}
+		//構建一個包含所有餘額不足玩家的封包
+		if (!insufficientPlayers.empty())
+		{
+			String combinedGameOverMsg = "GAMEOVER|";
+			for (size_t i = 0; i < insufficientPlayers.size(); i++)
+			{
+				combinedGameOverMsg += IntToStr(insufficientPlayers[i]);
+				if (i < insufficientPlayers.size() - 1)
+				{
+					combinedGameOverMsg += ",";
+				}
+			}
+			// 發送組合封包給所有玩家
+			for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+			{
+				TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+				Sleep(50); // 等個 50 毫秒
+				clientSocket->SendText(combinedGameOverMsg);
+			}
+			// 記錄日誌
+			for (int playerNum : insufficientPlayers)
+			{
+				Memo1->Lines->Add("玩家 " + IntToStr(playerNum) + " 餘額不足，通知離線");
+			}
+		}
+		else//如果有玩家金額不足的話就無法重新開始
+		{
+			if(clientnum == 4) //目前連線數量
+			{
+				Button1->Visible=true;
+				Button1->Enabled=true;
+			}
+		}
+
+
+	}
+
+
+	else if (receivedText.Pos("SUCCESS|NO|") == 1)//沒射龍門
+	{
+		String successno= receivedText.SubString(12, 1);
+		Memo1->Lines->Add("玩家" + successno + "沒射龍門");
+
+		//通知其他玩家有人沒射龍門
+		String playerSuccessNoMsg = "PLAYER_SUCCESSNO|" + successno;
+
+		for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)//目前有多少client正在連線
+		{
+			TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];//取出每個server
+			if (clientSocket != Socket)//避免把斷線訊息發送給自己
+			{
+				clientSocket->SendText(playerSuccessNoMsg);
+			}
+		}
+		successnonum = successnonum +1 ;//沒設龍門的玩家數量+1
+		
+		if(successnonum == clientnum)//如果沒設龍門的玩家數量=目前的玩家數量
+		{
+			startok = false;//判斷為遊戲還沒開始
+			stop();
+			Memo1->Clear();
+			Memo1->Lines->Add("遊戲結束");
+
+				// 收集所有餘額不足的玩家
+				//std::vector<int> insufficientPlayers;
+				//遍歷 playerMoney 容器中的所有玩家金額
+				for (auto it = playerMoney.begin(); it != playerMoney.end(); ++it)
+				{
+					int playerNum = it->first;
+					int remainingmoney = it->second;
+					if (remainingmoney < 5) // 如果玩家餘額不足
+					{
+						insufficientPlayers.push_back(playerNum);
+					}
+					//Memo1->Lines->Add(remainingmoney);
+				}
+				//構建一個包含所有餘額不足玩家的封包
+				if (!insufficientPlayers.empty())
+				{
+					String combinedGameOverMsg = "GAMEOVER|";
+
+
+					for (size_t i = 0; i < insufficientPlayers.size(); i++)
+					{
+						combinedGameOverMsg += IntToStr(insufficientPlayers[i]);
+						if (i < insufficientPlayers.size() - 1)
+						{
+							combinedGameOverMsg += ",";
+						}
+					}
+					// 發送組合封包給所有玩家
+					for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+					{
+						TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+						Sleep(50); // 等個 50 毫秒
+						clientSocket->SendText(combinedGameOverMsg);
+					}
+					// 記錄日誌
+					for (int playerNum : insufficientPlayers)
+					{
+						Memo1->Lines->Add("玩家 " + IntToStr(playerNum) + " 餘額不足，通知離線");
+					}
+				}
+				else//如果有玩家金額不足的話就無法重新開始
+				{
+					if(clientnum == 4) //目前連線數量
+					{
+						Button1->Visible=true;
+						Button1->Enabled=true;
+					}
+				}
+
+		}
+	}
+
+	else
+	{
+		Memo1->Lines->Add("未知的訊息: " + receivedText);
+	}
+
+
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button2Click(TObject *Sender)
+{
+
+	if(remainingmoney<5)
+	{
+		ShowMessage("餘額不足");
+		return;
+	}
+	money = 5;
+
+	// 將金錢值傳送給 Server
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+		String message = "BET|" + IntToStr(money);
+		ClientSocket1->Socket->SendText(message);
+		Sleep(100);//延遲 100 毫秒，確保 Server 有時間處理
+		String moneyMsg = "MONEY|" + playerNum + "|" + IntToStr(remainingmoney - money);//剩餘金額
+		ClientSocket1->Socket->SendText(moneyMsg);
+
+		GroupBox1->Visible=false;//不能重複下注
+		//GroupBox2->Visible=false;
+		hasbet[StrToInt(playerNum-1)] = true;
+
+		remainingmoney-=5;
+		Label6->Caption= remainingmoney;
+	}
+	else
+	{
+		Memo1->Lines->Add("未連線到伺服器！");
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button3Click(TObject *Sender)
+{
+	if(remainingmoney<10)
+	{
+		ShowMessage("餘額不足");
+		return;
+	}
+	money = 10;
+
+	// 將金錢值傳送給 Server
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+		String message = "BET|" + IntToStr(money);
+		ClientSocket1->Socket->SendText(message);
+        Sleep(100);//延遲 100 毫秒，確保 Server 有時間處理
+		String moneyMsg = "MONEY|" + playerNum + "|" + IntToStr(remainingmoney - money);//剩餘金額
+		ClientSocket1->Socket->SendText(moneyMsg);
+		GroupBox1->Visible=false;//不能重複下注
+		//GroupBox2->Visible=false;
+		hasbet[StrToInt(playerNum-1)] = true;
+		remainingmoney-=10;
+		Label6->Caption= remainingmoney;
+	}
+	else
+	{
+		ShowMessage("未連線到伺服器！");
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button4Click(TObject *Sender)
+{
+	if(remainingmoney<50)
+	{
+		ShowMessage("餘額不足");
+		return;
+	}
+	money = 50;
+
+	// 將金錢值傳送給 Server
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+		String message = "BET|" + IntToStr(money);
+		ClientSocket1->Socket->SendText(message);
+		Sleep(100);//延遲 100 毫秒，確保 Server 有時間處理
+		String moneyMsg = "MONEY|" + playerNum + "|" + IntToStr(remainingmoney - money);//剩餘金額
+		ClientSocket1->Socket->SendText(moneyMsg);
+
+		GroupBox1->Visible=false;//不能重複下注
+		//GroupBox2->Visible=false;
+		hasbet[StrToInt(playerNum-1)] = true;
+
+		remainingmoney-=50;
+		Label6->Caption= remainingmoney;
+	}
+	else
+	{
+		ShowMessage("未連線到伺服器！");
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button5Click(TObject *Sender)
+{
+	if(remainingmoney<100)
+	{
+        ShowMessage("餘額不足");
+		return;
+	}
+	money = 100;
+
+	//將金錢值傳送給 Server
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+		String message = "BET|" + IntToStr(money);
+		ClientSocket1->Socket->SendText(message);
+		Sleep(100);//延遲 100 毫秒，確保 Server 有時間處理
+		String moneyMsg = "MONEY|" + playerNum + "|" + IntToStr(remainingmoney - money);//剩餘金額
+		ClientSocket1->Socket->SendText(moneyMsg);
+		GroupBox1->Visible=false;//不能重複下注
+		//GroupBox2->Visible=false;
+		hasbet[StrToInt(playerNum-1)] = true;
+        
+		remainingmoney-=100;
+		Label6->Caption= remainingmoney;
+	}
+	else
+	{
+		ShowMessage("未連線到伺服器！");
+	}
+}
+//---------------------------------------------------------------------------
+
+
+
+void __fastcall TForm1::FormClose(TObject *Sender, TCloseAction &Action)
+{
+
+	if(blnServer)
+	{
+	   try
+	   {
+			//重新編玩家編號
+		   for (int i = 0; i < 4; i++)
+		   {
+			   if (playerSockets[i] != nullptr)
+			   {
+				   playerSockets[i]->Close();  // 斷開連線
+				   playerSockets[i] = nullptr; // 清空 socket
+			   }
+			   isConnected[i] = false; // 標記所有玩家為未連線
+		   }
+		   ServerSocket1->Active=false; //關閉與伺服端連接
+	   }
+        catch (const Exception &e)
+		{
+			Form2->Memo3->Lines->Add("伺服器錯誤：" + e.Message);
+		}
+	}
+	else//如果是client
+	{
+		try
+		{
+			/*if(
+			(playerNum == 1 && bettime >= 1 && bettime <= 10)||
+			(playerNum == 2 && bettime >= 10 && bettime <= 20)||
+			(playerNum == 3 && bettime >= 20 && bettime <= 30)||
+			(playerNum == 4 && bettime >= 30 && bettime <= 40)
+			)//本人抽棄牌不能斷線
+			{
+				ShowMessage("目前正在抽棄牌，無法斷線");
+				Action = caNone;
+				return;
+			}*/
+			if (ClientSocket1->Active)//如果連線啟動
+			{
+				//發送斷線通知給伺服器
+				ClientSocket1->Socket->SendText("@DISCONNECT|" + playerNum+"@");
+				Timer2->Enabled=true;
+			}
+			//進一步的資源釋放或清理操作
+			//Memo1->Lines->Add("玩家 " + playerNum + " 已離線");
+			Timer1->Enabled = false;//停止計時
+		}
+        catch (const Exception &e)
+		{
+			Form2->Memo3->Lines->Add("客戶端錯誤：" + e.Message);
+		}
+	}
+	startok = false;//遊戲結束
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Timer1Timer(TObject *Sender)
+{
+
+	//計算下注時間
+	Timer1->Interval = 1000;
+	Bettingtime--;
+	//Label8->Caption =  Bettingtime;
+	if (Bettingtime == 1)//如果時間超過10秒
+	{
+		GroupBox1->Visible=false;
+		GroupBox1->Enabled=false;
+	}
+	if (Bettingtime == 0)//如果時間超過10秒
+	{
+		//Label5->Caption="嗨";
+		/*GroupBox1->Visible=false;
+		GroupBox1->Enabled=false;*/
+
+		Timer3->Enabled=true;//開始計算時間
+		Timer1->Enabled=false;
+		if(!hasbet[StrToInt(playerNum-1)])//並且如果玩家尚未下注(自動下注)
+		{
+			money = 10;
+			/*if (remainingmoney < money)
+			{
+				Memo1->Lines->Add("沒有籌碼自動斷線");
+
+				if (ClientSocket1->Active)
+				{
+					ClientSocket1->Socket->SendText("DISCONNECT|" + playerNum);
+
+					ClientSocket1->Active = false;
+				}
+
+				Disconnect1->Click();
+				return;
+
+			}*/
+
+			if (ClientSocket1->Active)//確認已連線到 Server
+			{
+
+				String message = "BET|" + IntToStr(money);
+				ClientSocket1->Socket->SendText(message);
+				Sleep(100);//延遲 100 毫秒，確保 Server 有時間處理
+				String moneyMsg = "MONEY|" + playerNum + "|" + IntToStr(remainingmoney - money);//剩餘金額
+				ClientSocket1->Socket->SendText(moneyMsg);
+				if(remainingmoney>=10)//自動下注籌碼
+				{
+					remainingmoney-=10;
+                    hasbet[StrToInt(playerNum-1)] = true;//改成已下注
+				}
+				else//自動下注金額不足自動斷線
+				{
+					//遍歷 playerMoney 容器中的所有玩家金額
+					/*for (auto it = playerMoney.begin(); it != playerMoney.end(); ++it)
+					{
+						int playerNum = it->first;//容器中每個元素的第一個值是玩家編號 (key)
+						int remainingmoney = it->second;//容器中每個元素的第二個值是玩家的剩餘金額 (value)
+
+						String gameOverMsg = "GAMEOVER|" + IntToStr(playerNum);
+
+						// 發送訊息給所有連接的玩家
+						for (int i = 0; i < ServerSocket1->Socket->ActiveConnections; i++)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+							clientSocket->SendText(gameOverMsg);
+						}
+
+						Memo1->Lines->Add("沒有籌碼自動斷線");
+
+					}*/
+					Memo1->Lines->Add("沒有籌碼自動斷線");
+                    if (ClientSocket1->Active)
+					{
+						ClientSocket1->Socket->SendText("@DISCONNECT|" + playerNum+"@");
+
+						ClientSocket1->Active = false;
+					}
+					Disconnect1->Click();
+				}
+				Label6->Caption= remainingmoney;
+
+
+			}
+
+		}
+		hasbet[StrToInt(playerNum-1)] = false;
+	}
+	/*if(remainingmoney < 0)//如果沒有籌碼
+	{
+		Memo1->Lines->Add("沒有籌碼，自動斷線");
+		if (ClientSocket1->Active)
+		{   Memo1->Lines->Add("嗨");
+			ClientSocket1->Socket->SendText("DISCONNECT|" + playerNum);
+			ClientSocket1->Active = false;
+			Memo1->Lines->Add("嗨2");
+		}
+	}*/
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TForm1::Timer2Timer(TObject *Sender)
+{
+	//combobox顯示連線
+	Timer2->Enabled=false;
+	ReflashClientList();
+}
+//---------------------------------------------------------------------------
+
+
+
+void __fastcall TForm1::Button6Click(TObject *Sender)
+{
+	/*String card1 = DealCard();
+	String message = "CARDS|" + card1;
+	clientSocket->SendText(message); // 傳送牌組
+	Image6->Picture->LoadFromFile("image\\" + card1 + ".bmp");
+	Memo1->Lines->Add("抽牌：" + IntToStr(i + 1) + ": " + card1);*/
+    
+
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+        quicksmoke = true;//判斷為抽了牌
+		ClientSocket1->Socket->SendText("DRAW|YES"+ playerNum);//玩家拿牌
+		GroupBox2->Visible=false;
+		Label7->Visible=false;
+		Label9->Visible=false;
+
+
+	}
+	else
+	{
+		ShowMessage("未連線到伺服器！");
+	}
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Button7Click(TObject *Sender)
+{
+	if (ClientSocket1->Active)//確認已連線到 Server
+	{
+        quicksmoke = true;//判斷為抽了牌
+		ClientSocket1->Socket->SendText("DRAW|NO"+ playerNum);//玩家不拿牌
+		Sleep(100);  // 延遲 100 毫秒，確保 Server 有時間處理
+		ClientSocket1->Socket->SendText("SUCCESS|NO|" + playerNum);//傳給server(直接當成沒射龍門)
+
+
+		/*if(playerNum == 4)//所有玩家都沒射龍門
+		{
+			Timer3->Enabled=false;//停止計時
+			quicksmoke=false;//全都改為沒抽過牌
+			bettime = 0;//抽棄牌計時變0
+		}*/
+		GroupBox2->Visible=false;
+		quicksmoke = true;//判斷為棄了牌
+
+		Label7->Visible=false;
+		Label9->Visible=false;
+
+        Memo2->Lines->Add("玩家 "+playerNum+" 沒射龍門");
+	}
+	else
+	{
+		ShowMessage("未連線到伺服器！");
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Timer3Timer(TObject *Sender)
+{
+	//判斷是否抽牌
+	Timer3->Interval = 1000;
+	bettime++;
+	//Label8->Caption =  bettime;
+	//Label7->Caption =  bettime;
+	//Memo1->Lines->Add(quicksmoke);
+	if (!quicksmoke)//如果還沒按下抽牌或棄牌按鈕
+	{
+		if(0<=bettime && bettime<=10)
+		{
+			if(playerNum == 1)
+			{
+				GroupBox2->Visible=true;
+				GroupBox2->Enabled=true;
+
+                Label7->Caption =  bettime;
+                Label7->Visible=true;
+				Label9->Visible=true;
+			}
+			if(playerNum == 2 || playerNum == 3 || playerNum == 4)
+			{
+				GroupBox2->Visible=false;
+				GroupBox2->Enabled=false;
+
+                Label7->Visible=false;
+				Label9->Visible=false;
+			}
+			//玩家1時間到沒選棄牌或抽牌自動判定為棄牌
+			if(bettime == 10 && playerNum == 1 && !quicksmoke)
+			{
+				Button7->Click();
+			}
+		}
+		if(11<=bettime && bettime<=20)
+		{
+			if(playerNum == 2)
+			{
+				GroupBox2->Visible=true;
+				GroupBox2->Enabled=true;
+
+				Label7->Caption =  bettime-10;
+				Label7->Visible=true;
+				Label9->Visible=true;
+			}
+			if(playerNum == 1 || playerNum == 3 || playerNum == 4)
+			{
+				GroupBox2->Visible=false;
+				GroupBox2->Enabled=false;
+
+                Label7->Visible=false;
+				Label9->Visible=false;
+			}
+			//玩家2時間到沒選棄牌或抽牌自動判定為棄牌
+			if(bettime == 20 && playerNum == 2 && !quicksmoke)
+			{
+				Button7->Click();
+			}
+		}
+		if(21<=bettime && bettime<=30)
+		{
+			if(playerNum == 3)
+			{
+				GroupBox2->Visible=true;
+				GroupBox2->Enabled=true;
+
+				Label7->Caption =  bettime-20;
+				Label7->Visible=true;
+				Label9->Visible=true;
+			}
+			if(playerNum == 1 || playerNum == 2 || playerNum == 4)
+			{
+				GroupBox2->Visible=false;
+				GroupBox2->Enabled=false;
+
+                Label7->Visible=false;
+				Label9->Visible=false;
+			}
+            //玩家3時間到沒選棄牌或抽牌自動判定為棄牌
+			if(bettime == 30 && playerNum == 3 && !quicksmoke)
+			{
+				Button7->Click();
+			}
+		}
+		if(31<=bettime && bettime<=40)
+		{
+			if(playerNum == 4)
+			{
+				GroupBox2->Visible=true;
+				GroupBox2->Enabled=true;
+
+				Label7->Caption =  bettime-30;
+				Label7->Visible=true;
+				Label9->Visible=true;
+			}
+			if(playerNum == 1 || playerNum == 2 || playerNum == 3)
+			{
+				GroupBox2->Visible=false;
+				GroupBox2->Enabled=false;
+
+				Label7->Visible=false;
+				Label9->Visible=false;
+			}
+			//玩家4時間到沒選棄牌或抽牌自動判定為棄牌
+			if(bettime == 40 && playerNum == 4 && !quicksmoke)
+			{
+				Button7->Click();
+			}
+		}
+	}
+
+	if(bettime>40)//如果已經40秒了就重新計算
+	{
+		bettime = 0;
+		Timer3->Enabled = false;//關閉計時器
+	}
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::Timer5Timer(TObject *Sender)
+{//定期傳送封包
+
+	//留
+	//server傳給client
+	/*if (ServerSocket1->Active)
+	{
+		for (int i = ServerSocket1->Socket->ActiveConnections - 1; i >= 0; i--)
+		{
+			TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[i];
+			clientSocket->SendText("@PING@");//server傳給每個client"PING"
+		}
+		//wifiServer = false;
+		Timer5->Enabled = false;
+		//Label8->Caption =  wifiServer;
+	}*///{這裡網路}
+	//client傳給server封包
+	if (ClientSocket1->Active)
+	{
+		twoTime +=1;
+		if(twoTime == 2)
+		{
+			ClientSocket1->Socket->SendText("@PING|" + playerNum +"@");
+
+			Timer5->Enabled = false;
+
+			twoTime = 0;
+		}
+	}
+	/*Timer6->Enabled = true;*/
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TForm1::Timer6Timer(TObject *Sender)//檢查目前是連線
+{
+	//server
+	/*if (ClientSocket1->Active)//在client判斷server是否斷線
+	{
+		clientTime1 += 1;//每次計時器觸發增加 1 秒
+		if (clientTime1 >= 10)//如果經過 10 秒
+		{
+			Form2->Memo3->Lines->Add("server連線：" + String(wifiServer ? "true" : "false"));
+			if (!wifiServer) // 如果未收到server的回應
+			{
+				//Memo2->Lines->Add("server網路已斷線");
+				//ShowMessage("與server的連線已中斷，請重新連線。");
+				Form2->Memo3->Lines->Add("網路已斷線");
+				Memo2->Lines->Add("網路已斷線");
+				//ServerSocket1->Active = false;//停止伺服器
+
+				Disconnect1->Click();
+			}
+			clientTime1 = 0;
+			//Timer6->Enabled = false;
+			Timer5->Enabled = true;//重新啟動 Timer5
+			wifiServer = false; // 重置伺服器的回應狀態
+			Form2->Memo3->Lines->Add("server連線重置：" + String(wifiServer ? "true" : "false"));
+		}
+
+	}
+	if(blnServer)//在server判斷server是否斷線
+	{
+		if(clientnum>=1)//超過1人連線再判斷
+		{
+			serverTime6 += 1;//每次計時器觸發增加 1 秒
+			if (serverTime6 >= 10) // 如果經過 10 秒
+			{
+				Form2->Memo3->Lines->Add("server連線：" + String(ServerOK ? "true" : "false"));
+				if (!ServerOK) // 如果沒有收到 "OK"
+				{
+					Form2->Memo3->Lines->Add("網路已斷線");
+					Memo1->Lines->Add("網路已斷線");
+					Timer7->Enabled = false;
+					Timer8->Enabled = false;
+					Timer9->Enabled = false;
+					Timer10->Enabled = false;
+					Disconnect1->Click();
+				}
+				ServerOK = false;
+				Form2->Memo3->Lines->Add("server連線重置為：" + String(ServerOK ? "true" : "false"));
+				serverTime6 = 0;
+				//Timer6->Enabled = false;
+				Timer5->Enabled = true;//重新啟動 Timer5
+			}
+		}
+	}*///{這裡網路}
+	//client
+	if(!blnServer)//在client判斷自己是否斷線
+	{
+		clientTime2 += 1; // 每次計時器觸發增加 1 秒
+
+		if (clientTime2 >= 10) // 如果經過 10 秒
+		{
+			for (int i = 1; i <= 4; i++) // 檢查所有玩家
+			{
+				//if(ServerSocket1->Socket->ActiveConnections)
+				//{
+				if(playerNum == i)//只檢查自己是否斷線
+				{
+					Form2->Memo3->Lines->Add("玩家" + String(i) + "連線：" + String(ClientOK[i] ? "true" : "false"));
+					if (!ClientOK[i]) // 如果該玩家未回應 OK
+					{
+						//Memo1->Lines->Add("玩家 " + IntToStr(i) + " 已斷線(client)");
+						Memo2->Lines->Add("網路已斷線");
+						Disconnect1->Click();
+						Timer5->Enabled = false;
+						Timer6->Enabled = false;
+					}
+				}
+				//}
+			}
+
+			clientTime2 = 0;
+			//Timer6->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置所有玩家的 ClientOK 為 false，準備下一次檢測
+			for (int i = 1; i <=4; i++)
+			{
+				ClientOK[i] = false;
+				if(playerNum == i)//只顯示自己
+				{
+					Form2->Memo3->Lines->Add("玩家" + String(i) + "連線重置：" + String(ClientOK[i] ? "true" : "false"));
+				}
+			}
+		}
+	}
+	//Label8->Caption = IntToStr(clientTime1);
+	/*else
+	{
+		serverTime += 1; // 每秒觸發
+		Label8->Caption = serverTime;
+		if (serverTime >= 10)
+		{
+			for (int i = 1; i <= ServerSocket1->Socket->ActiveConnections; i++)
+			{
+				if(ServerSocket1->Socket->ActiveConnections)
+				{
+					if (!wifiClient[i])
+					{
+						Memo1->Lines->Add("玩家 " + IntToStr(i) + " 網路已斷線(server)");
+
+						// 斷開該玩家連線
+						for (int j = ServerSocket1->Socket->ActiveConnections - 1; j >= 0; j--)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[j];
+
+							// 假設你用 socket->Socket->Connections[j]->SocketHandle == 玩家 i 的方式對應
+							// 或其他方式比對是否為該玩家
+							if (j == i) // 或用對應編號判斷
+							{
+								clientSocket->Close(); // 強制斷線
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			serverTime = 0; // 重置時間留著
+			Timer6->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置 wifiClient[] 狀態，為下一次檢查做準備
+			for (int i = 0; i < wifiClient.size(); i++)
+			{
+				wifiClient[i] = false;
+			}
+		}
+	}*/
+
+}
+//---------------------------------------------------------------------------
+
+
+
+void __fastcall TForm1::Timer7Timer(TObject *Sender)
+{
+	if(blnServer)//server判斷client是否斷線
+	{
+		serverTime7 += 1; // 每秒觸發
+		if (serverTime7 >= 10)
+		{
+			//for (int i = 1; i <= ServerSocket1->Socket->ActiveConnections; i++)
+			//{
+				//if(ServerSocket1->Socket->ActiveConnections)
+				//{
+					Form2->Memo3->Lines->Add("玩家1連線：" + String(wifiClient[1] ? "true" : "false"));
+					if (!wifiClient[1])
+					{
+						Form2->Memo3->Lines->Add("網路斷線");
+						Memo1->Lines->Add("網路斷線");
+						clientnum = ServerSocket1->Socket->ActiveConnections - 1;//有玩家斷線clientnum-1
+
+						// 斷開該玩家連線
+						/*for (int j = ServerSocket1->Socket->ActiveConnections - 1; j >= 0; j--)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[j];
+
+							// 假設你用 socket->Socket->Connections[j]->SocketHandle == 玩家 i 的方式對應
+							// 或其他方式比對是否為該玩家
+							if (j == 1) // 或用對應編號判斷
+							{
+								clientSocket->Close(); // 強制斷線
+								break;
+							}
+						}*/
+						if (0 < ServerSocket1->Socket->ActiveConnections)//如果正在連線
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[0];
+							clientSocket->Close();//主動關閉連線
+						}
+						Timer7->Enabled = false;
+					}
+				//}
+			//}
+
+			serverTime7 = 0; // 重置時間留著
+			//Timer7->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置 wifiClient[] 狀態，為下一次檢查做準備
+
+			wifiClient[1] = false;
+			Form2->Memo3->Lines->Add("玩家1連線重置：" + String(wifiClient[1] ? "true" : "false"));
+		}
+		//Label8->Caption = IntToStr(serverTime7);
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Timer8Timer(TObject *Sender)
+{
+   if(blnServer)
+	{
+		serverTime8 += 1; // 每秒觸發
+		if (serverTime8 >= 10)
+		{
+			//for (int i = 1; i <= ServerSocket1->Socket->ActiveConnections; i++)
+			//{
+				//if(ServerSocket1->Socket->ActiveConnections)
+				//{
+					Form2->Memo3->Lines->Add("玩家2連線：" + String(wifiClient[2] ? "true" : "false"));
+					if (!wifiClient[2])
+					{
+						Form2->Memo3->Lines->Add("網路斷線");
+						Memo1->Lines->Add("網路已斷線");
+						clientnum = ServerSocket1->Socket->ActiveConnections - 1;//有玩家斷線clientnum-1
+
+						if (1 < ServerSocket1->Socket->ActiveConnections)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[1];
+							clientSocket->Close(); // 主動關閉連線
+							//Memo1->Lines->Add("玩家 2 已被斷線");
+						}
+						Timer8->Enabled = false;
+					}
+				//}
+			//}
+
+			serverTime8 = 0; // 重置時間留著
+			//Timer8->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置 wifiClient[] 狀態，為下一次檢查做準備
+			wifiClient[2] = false;
+            Form2->Memo3->Lines->Add("玩家2連線：" + String(wifiClient[2] ? "true" : "false"));
+		}
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Timer9Timer(TObject *Sender)
+{
+	if(blnServer)
+	{
+		serverTime9 += 1; // 每秒觸發
+		if (serverTime9 >= 10)
+		{
+			//for (int i = 1; i <= ServerSocket1->Socket->ActiveConnections; i++)
+			//{
+				//if(ServerSocket1->Socket->ActiveConnections)
+				//{
+					Form2->Memo3->Lines->Add("玩家3連線：" + String(wifiClient[3] ? "true" : "false"));
+					if (!wifiClient[3])
+					{
+						Form2->Memo3->Lines->Add("網路斷線");
+						Memo1->Lines->Add("網路斷線");
+						clientnum = ServerSocket1->Socket->ActiveConnections - 1;//有玩家斷線clientnum-1
+
+						if (2 < ServerSocket1->Socket->ActiveConnections)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[2];
+							clientSocket->Close(); // 主動關閉連線
+							//Memo1->Lines->Add("玩家 3 已被斷線");
+						}
+						Timer9->Enabled = false;
+					}
+				//}
+			//}
+
+			serverTime9 = 0; // 重置時間留著
+			//Timer9->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置 wifiClient[] 狀態，為下一次檢查做準備
+			wifiClient[3] = false;
+			Form2->Memo3->Lines->Add("玩家3連線：" + String(wifiClient[3] ? "true" : "false"));
+		}
+	}
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TForm1::Timer10Timer(TObject *Sender)
+{
+	if(blnServer)
+	{
+		serverTime10 += 1; // 每秒觸發
+		if (serverTime10 >= 10)
+		{
+			//for (int i = 1; i <= ServerSocket1->Socket->ActiveConnections; i++)
+			//{
+				//if(ServerSocket1->Socket->ActiveConnections)
+				//{
+					Form2->Memo3->Lines->Add("玩家4連線：" + String(wifiClient[4] ? "true" : "false"));
+					if (!wifiClient[4])
+					{
+						Form2->Memo3->Lines->Add("網路斷線");
+						Memo1->Lines->Add("網路斷線");
+						clientnum = ServerSocket1->Socket->ActiveConnections - 1;//有玩家斷線clientnum-1
+
+						if (3 < ServerSocket1->Socket->ActiveConnections)
+						{
+							TCustomWinSocket *clientSocket = ServerSocket1->Socket->Connections[3];
+							clientSocket->Close(); // 主動關閉連線
+							//Memo1->Lines->Add("玩家 4 已被斷線");
+						}
+						Timer10->Enabled = false;
+					}
+				//}
+			//}
+
+			serverTime10 = 0; // 重置時間留著
+			//Timer10->Enabled = false;
+			Timer5->Enabled = true; // 重新啟動 Timer5
+			// 重置 wifiClient[] 狀態，為下一次檢查做準備
+			wifiClient[4] = false;
+			Form2->Memo3->Lines->Add("玩家4連線：" + String(wifiClient[4] ? "true" : "false"));
+		}
+	}
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TForm1::open1Click(TObject *Sender)
+{
+	Form2->Show();
+}
+//---------------------------------------------------------------------------
+
+
+
+
+
+

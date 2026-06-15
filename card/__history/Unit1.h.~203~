@@ -1,0 +1,157 @@
+//---------------------------------------------------------------------------
+
+//#ifndef Unit1H
+//#define Unit1H
+#ifndef CardsH
+#define CardsH
+//---------------------------------------------------------------------------
+#include <System.Classes.hpp>
+#include <Vcl.Controls.hpp>
+#include <Vcl.StdCtrls.hpp>
+#include <Vcl.Forms.hpp>
+#include <System.Win.ScktComp.hpp>
+#include <Vcl.Menus.hpp>
+#include <Vcl.ComCtrls.hpp>
+#include <Vcl.ExtCtrls.hpp>
+#include <Vcl.Imaging.pngimage.hpp>
+
+#include <vector>
+#include <algorithm>
+#include <random>
+//---------------------------------------------------------------------------
+
+
+
+
+class TForm1 : public TForm
+{
+__published:	// IDE-managed Components
+	TServerSocket *ServerSocket1;
+	TClientSocket *ClientSocket1;
+	TMemo *Memo1;
+	TMemo *Memo2;
+	TStatusBar *StatusBar1;
+	TButton *Button1;
+	TImage *Image1;
+	TImage *Image2;
+	TImage *Image3;
+	TImage *Image4;
+	TImage *Image5;
+	TImage *Image6;
+	TImage *Image7;
+	TImage *Image8;
+	TLabel *Label1;
+	TLabel *Label2;
+	TLabel *Label3;
+	TLabel *Label4;
+	TGroupBox *GroupBox1;
+	TButton *Button2;
+	TButton *Button3;
+	TButton *Button4;
+	TGroupBox *GroupBox2;
+	TButton *Button6;
+	TButton *Button7;
+	TButton *Button5;
+	TTimer *Timer1;
+	TMainMenu *MainMenu1;
+	TMenuItem *File1;
+	TMenuItem *Listen1;
+	TMenuItem *Connect1;
+	TMenuItem *Disconnect1;
+	TLabel *Label5;
+	TLabel *Label6;
+	TComboBox *ComboBox1;
+	TTimer *Timer2;
+	TImage *Image9;
+	TImage *Image10;
+	TImage *Image11;
+	TImage *Image12;
+	TTimer *Timer3;
+	TLabel *Label7;
+	TLabel *Label8;
+	TTimer *Timer4;
+	TLabel *Label9;
+	TTimer *Timer5;
+	TTimer *Timer6;
+	TTimer *Timer7;
+	TTimer *Timer8;
+	TTimer *Timer9;
+	TTimer *Timer10;
+	TMenuItem *Debug1;
+	TMenuItem *open1;
+	TButton *Button8;
+	void __fastcall Listen1Click(TObject *Sender);
+	void __fastcall Connect1Click(TObject *Sender);
+	void __fastcall Disconnect1Click(TObject *Sender);
+	void __fastcall ClientSocket1Connect(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall ServerSocket1Accept(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall ClientSocket1Disconnect(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall ServerSocket1ClientDisconnect(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall ServerSocket1ClientConnect(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall ClientSocket1Read(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall Button1Click(TObject *Sender);
+	void __fastcall ServerSocket1ClientError(TObject *Sender, TCustomWinSocket *Socket,
+          TErrorEvent ErrorEvent, int &ErrorCode);
+	void __fastcall ClientSocket1Error(TObject *Sender, TCustomWinSocket *Socket, TErrorEvent ErrorEvent,
+          int &ErrorCode);
+	void __fastcall ServerSocket1ClientRead(TObject *Sender, TCustomWinSocket *Socket);
+	void __fastcall Button2Click(TObject *Sender);
+	void __fastcall Button3Click(TObject *Sender);
+	void __fastcall Button4Click(TObject *Sender);
+	void __fastcall Button5Click(TObject *Sender);
+	void __fastcall FormClose(TObject *Sender, TCloseAction &Action);
+	void __fastcall Timer1Timer(TObject *Sender);
+	void __fastcall Timer2Timer(TObject *Sender);
+	void __fastcall Button6Click(TObject *Sender);
+	void __fastcall Button7Click(TObject *Sender);
+	void __fastcall Timer3Timer(TObject *Sender);
+	void __fastcall Timer5Timer(TObject *Sender);
+	void __fastcall Timer6Timer(TObject *Sender);
+	void __fastcall Timer7Timer(TObject *Sender);
+	void __fastcall Timer8Timer(TObject *Sender);
+	void __fastcall Timer9Timer(TObject *Sender);
+	void __fastcall Timer10Timer(TObject *Sender);
+	void __fastcall open1Click(TObject *Sender);
+
+
+
+
+
+
+
+
+
+private:	// User declarations
+	//CardDealer dealer;
+	//TList *playerCards;
+	//std::vector<Card> deck;
+
+public:		// User declarations
+	__fastcall TForm1(TComponent* Owner);
+	void sendCardsToClient(TCustomWinSocket *);
+	bool isPortAvailable(int );
+
+	void __fastcall dealInitialCards();
+	void __fastcall sendCardsToClients();
+	void __fastcall startGame(); //傳送開始遊封包
+	void stop();//不顯示牌
+	void ReflashClientList();//combobox顯示
+	void look();//顯示牌
+	void AssignCardsToImages(int , String , String );
+	void test();
+	bool isCardBetween(String newCard, String card1, String card2);
+	int CompareCards(String , String ,String );
+    void ResetBettingStatus();
+	void __fastcall DisconnectTimerEvent(TObject *);
+	void DisconnectPlayer(int );
+	void wifi();
+	void __fastcall KickPlayer(int );
+	void sticky();
+	/*void __fastcall dealInitialCards();
+	void __fastcall sendCardsToClients();
+	void __fastcall startGame();*/
+};
+//---------------------------------------------------------------------------
+extern PACKAGE TForm1 *Form1;
+//---------------------------------------------------------------------------
+#endif
